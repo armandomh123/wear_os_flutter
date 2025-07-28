@@ -5,6 +5,8 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import 'package:wear_plus/wear_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // -----------------------------------------------------------------------------
 // PASO 1: Agrega estas dependencias a tu archivo `pubspec.yaml`
@@ -17,6 +19,8 @@ import 'package:wear_plus/wear_plus.dart';
 //   flutter_local_notifications: ^17.1.2
 //   provider: ^6.1.2
 //   intl: ^0.19.0
+//   shared_preferences: ^2.2.3 // <--- AÑADIR PARA PERSISTENCIA
+//   permission_handler: ^11.3.1 // <--- AÑADIR PARA PERMISOS
 //
 // Y no olvides agregar los permisos para el micrófono en:
 // android/app/src/main/AndroidManifest.xml
@@ -74,17 +78,35 @@ class NotificationService {
 
 // Gestiona el estado de la lista de notas.
 class NoteProvider with ChangeNotifier {
-  final List<String> _notes = [];
+  List<String> _notes = [];
   List<String> get notes => _notes;
+  static const _notesKey = 'notes_key';
+
+  NoteProvider() {
+    _loadNotes();
+  }
+
+  Future<void> _loadNotes() async {
+    final prefs = await SharedPreferences.getInstance();
+    _notes = prefs.getStringList(_notesKey) ?? [];
+    notifyListeners();
+  }
+
+  Future<void> _saveNotes() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_notesKey, _notes);
+  }
 
   void addNote(String note) {
     _notes.add(note);
+    _saveNotes();
     notifyListeners();
     NotificationService().showNotification('Nota Guardada', 'Tu nota ha sido añadida correctamente.');
   }
 
   void deleteNote(int index) {
     _notes.removeAt(index);
+    _saveNotes();
     notifyListeners();
     NotificationService().showNotification('Nota Eliminada', 'La nota ha sido borrada.');
   }
@@ -238,7 +260,19 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _startListening(BuildContext context) async {
-    if (!_speech.isAvailable) {
+    // 1. Solicitar permiso de micrófono
+    var status = await Permission.microphone.request();
+
+    // 2. Comprobar el estado del permiso
+    if (status != PermissionStatus.granted) {
+      NotificationService().showNotification(
+          "Permiso denegado", "Se necesita acceso al micrófono para dictar notas.");
+      return;
+    }
+
+    // 3. Verificar si el servicio está disponible después de conceder el permiso
+    bool available = await _speech.initialize();
+    if (!available) {
       NotificationService().showNotification("Error", "Reconocimiento de voz no disponible.");
       return;
     }
@@ -252,15 +286,25 @@ class _HomeScreenState extends State<HomeScreen> {
         return StatefulBuilder(
           builder: (context, setDialogState) {
             if (!isListening) {
-              isListening = true;
-              _speech.listen(
-                onResult: (result) {
-                  setDialogState(() {
-                    recognizedWords = result.recognizedWords;
-                  });
-                },
-              );
-            }
+  isListening = true;
+
+  // Set status listener
+  _speech.statusListener = (status) {
+    if (status == 'notListening') {
+      setDialogState(() {
+        isListening = false;
+      });
+    }
+  };
+
+  _speech.listen(
+    onResult: (result) {
+      setDialogState(() {
+        recognizedWords = result.recognizedWords;
+      });
+    },
+  );
+}
 
             return AlertDialog(
               backgroundColor: const Color(0xFFDAD7CD),
@@ -268,7 +312,10 @@ class _HomeScreenState extends State<HomeScreen> {
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.mic, color: Theme.of(context).colorScheme.primary, size: 40),
+                  Icon(
+                    isListening ? Icons.mic : Icons.mic_off,
+                    color: Theme.of(context).colorScheme.primary, 
+                    size: 40),
                   const SizedBox(height: 16),
                   Text(recognizedWords.isEmpty ? 'Escuchando...' : recognizedWords, textAlign: TextAlign.center),
                 ],
@@ -336,8 +383,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(width: 10),
                   ElevatedButton(
                     onPressed: () {
-                      // Simulación de añadir nota por texto
-                      Provider.of<NoteProvider>(context, listen: false).addNote("Nota de texto de ejemplo");
+                      Navigator.push(context, MaterialPageRoute(builder: (_) => const TextNoteScreen()));
                     },
                     style: ElevatedButton.styleFrom(backgroundColor: theme.colorScheme.secondary),
                     child: const Icon(Icons.edit),
@@ -426,6 +472,63 @@ class NotesScreen extends StatelessWidget {
   }
 }
 
+// -----------------------------------------------------------------------------
+// PANTALLA PARA AÑADIR NOTA POR TEXTO
+// -----------------------------------------------------------------------------
+class TextNoteScreen extends StatefulWidget {
+  const TextNoteScreen({super.key});
+
+  @override
+  State<TextNoteScreen> createState() => _TextNoteScreenState();
+}
+
+class _TextNoteScreenState extends State<TextNoteScreen> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Scaffold(
+      backgroundColor: theme.scaffoldBackgroundColor,
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text('Nueva Nota', style: theme.textTheme.headlineSmall),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _controller,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'Escribe tu nota...',
+                ),
+              ),
+              const SizedBox(height: 10),
+              ElevatedButton(
+                onPressed: () {
+                  if (_controller.text.isNotEmpty) {
+                    Provider.of<NoteProvider>(context, listen: false)
+                        .addNote(_controller.text);
+                    Navigator.pop(context);
+                  } else {
+                    NotificationService().showNotification(
+                        'Error', 'La nota no puede estar vacía.');
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Guardar'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 // -----------------------------------------------------------------------------
 // PANTALLA DE CONFIGURACIÓN (CON SWIPE-TO-DISMISS AUTOMÁTICO)
