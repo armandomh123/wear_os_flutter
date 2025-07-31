@@ -218,7 +218,7 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => SettingsProvider()),
       ],
       child: MaterialApp(
-        title: 'Wear OS Notes',
+        title: 'GreenNote',
         theme: _buildAppTheme(),
         home: const WatchScreen(),
         debugShowCheckedModeBanner: false,
@@ -390,52 +390,64 @@ class _HomeScreenState extends State<HomeScreen> {
     );
 
     return Scaffold(
-      backgroundColor: isAmbient ? Colors.black : theme.scaffoldBackgroundColor,
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            // Reloj y Fecha
-            Text(DateFormat('HH:mm').format(_now), style: timeStyle),
-            Text(DateFormat('EEE, d MMM').format(_now), style: dateStyle),
-            const SizedBox(height: 15),
+      // El color de fondo ahora se gestiona en el Container para poder añadir una imagen.
+      body: Container(
+        decoration: BoxDecoration(
+          color: isAmbient ? Colors.black : theme.scaffoldBackgroundColor,
+          image: isAmbient
+              ? null
+              : const DecorationImage(
+                  image: AssetImage('assets/images/leaf_background.webp'),
+                  fit: BoxFit.cover,
+                  opacity: 0.2, // Hacemos la imagen sutil para que no moleste
+                ),
+        ),
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: <Widget>[
+              // Reloj y Fecha
+              Text(DateFormat('HH:mm').format(_now), style: timeStyle),
+              Text(DateFormat('EEE, d MMM').format(_now), style: dateStyle),
+              const SizedBox(height: 15),
 
-            if (!isAmbient)
-              // Botones de acción
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  ElevatedButton(
-                    onPressed: () => _startListening(context),
-                    child: const Icon(Icons.mic),
-                  ),
-                  const SizedBox(width: 10),
-                  ElevatedButton(
-                    onPressed: () {
-                      Navigator.push(context, MaterialPageRoute(builder: (_) => const TextNoteScreen()));
-                    },
-                    style: ElevatedButton.styleFrom(backgroundColor: theme.colorScheme.secondary),
-                    child: const Icon(Icons.edit),
-                  ),
-                ],
-              ),
-            const SizedBox(height: 10),
-            if (!isAmbient)
-              // Botones de navegación
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  IconButton(
-                    icon: Icon(Icons.list_alt, color: theme.colorScheme.primaryContainer),
-                    onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NotesScreen())),
-                  ),
-                  IconButton(
-                    icon: Icon(Icons.settings, color: theme.colorScheme.primaryContainer),
-                    onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen())),
-                  ),
-                ],
-              )
-          ],
+              if (!isAmbient)
+                // Botones de acción
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    ElevatedButton(
+                      onPressed: () => _startListening(context),
+                      child: const Icon(Icons.mic),
+                    ),
+                    const SizedBox(width: 10),
+                    ElevatedButton(
+                      onPressed: () {
+                        Navigator.push(context, MaterialPageRoute(builder: (_) => const TextNoteScreen()));
+                      },
+                      style: ElevatedButton.styleFrom(backgroundColor: theme.colorScheme.secondary),
+                      child: const Icon(Icons.edit),
+                    ),
+                  ],
+                ),
+              const SizedBox(height: 10),
+              if (!isAmbient)
+                // Botones de navegación
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    IconButton(
+                      icon: Icon(Icons.list_alt, color: theme.colorScheme.primaryContainer),
+                      onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NotesScreen())),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.settings, color: theme.colorScheme.primaryContainer),
+                      onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen())),
+                    ),
+                  ],
+                )
+            ],
+          ),
         ),
       ),
     );
