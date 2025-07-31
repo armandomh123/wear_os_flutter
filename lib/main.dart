@@ -1,35 +1,50 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:wear_plus/wear_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // -----------------------------------------------------------------------------
-// PASO 1: Agrega estas dependencias a tu archivo `pubspec.yaml`
+// MODELO DE DATOS Y UTILIDADES DE COLOR
 // -----------------------------------------------------------------------------
-// dependencies:
-//   flutter:
-//     sdk: flutter
-//   wear_plus: ^2.0.1 // <--- CAMBIO: Usar wear_plus en lugar de wear
-//   speech_to_text: ^6.6.0
-//   flutter_local_notifications: ^17.1.2
-//   provider: ^6.1.2
-//   intl: ^0.19.0
-//   shared_preferences: ^2.2.3 // <--- AÑADIR PARA PERSISTENCIA
-//   permission_handler: ^11.3.1 // <--- AÑADIR PARA PERMISOS
-//
-// Y no olvides agregar los permisos para el micrófono en:
-// android/app/src/main/AndroidManifest.xml
-// <uses-permission android:name="android.permission.RECORD_AUDIO" />
-// <uses-permission android:name="android.permission.BLUETOOTH" />
-// <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
-// <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-// -----------------------------------------------------------------------------
+class Note {
+  String text;
+  String colorHex;
 
+  Note({required this.text, required this.colorHex});
+
+  Color get color => _colorFromHex(colorHex);
+
+  Map<String, dynamic> toJson() => {
+        'text': text,
+        'colorHex': colorHex,
+      };
+
+  factory Note.fromJson(Map<String, dynamic> json) => Note(
+        text: json['text'] as String,
+        colorHex: json['colorHex'] as String,
+      );
+}
+
+// Helper para convertir un string hexadecimal a un color
+Color _colorFromHex(String hex) {
+  final hexCode = hex.replaceAll('#', '');
+  return Color(int.parse('FF$hexCode', radix: 16));
+}
+
+// Paleta de colores para las notas
+final List<String> noteColorPalette = [
+  '#A3B18A', // Verde suave (default)
+  '#84A98C', // Verde medio
+  '#6B9080', // Verde azulado
+  '#F4A261', // Naranja arena
+];
 
 // -----------------------------------------------------------------------------
 // SERVICIO DE NOTIFICACIONES
@@ -46,7 +61,7 @@ class NotificationService {
 
   Future<void> init() async {
     const AndroidInitializationSettings initializationSettingsAndroid =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
+        AndroidInitializationSettings('ic_notification');
 
     const InitializationSettings initializationSettings = InitializationSettings(
       android: initializationSettingsAndroid,
@@ -71,6 +86,28 @@ class NotificationService {
   }
 }
 
+// -----------------------------------------------------------------------------
+// SERVICIO DE MENSAJERÍA (PARA SNACKBARS)
+// -----------------------------------------------------------------------------
+// Clave global para acceder al ScaffoldMessenger desde cualquier parte de la app.
+final GlobalKey<ScaffoldMessengerState> scaffoldMessengerKey =
+    GlobalKey<ScaffoldMessengerState>();
+
+// Gestiona la visualización de SnackBars para feedback en la web.
+class MessengerService {
+  void showSnackbar(String message) {
+    if (scaffoldMessengerKey.currentState != null) {
+      scaffoldMessengerKey.currentState!
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(message),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+    }
+  }
+}
 
 // -----------------------------------------------------------------------------
 // PROVEEDORES DE ESTADO (usando Provider)
@@ -78,8 +115,8 @@ class NotificationService {
 
 // Gestiona el estado de la lista de notas.
 class NoteProvider with ChangeNotifier {
-  List<String> _notes = [];
-  List<String> get notes => _notes;
+  List<Note> _notes = [];
+  List<Note> get notes => _notes;
   static const _notesKey = 'notes_key';
 
   NoteProvider() {
@@ -88,27 +125,51 @@ class NoteProvider with ChangeNotifier {
 
   Future<void> _loadNotes() async {
     final prefs = await SharedPreferences.getInstance();
-    _notes = prefs.getStringList(_notesKey) ?? [];
+    final notesJson = prefs.getStringList(_notesKey) ?? [];
+    _notes = notesJson
+        .map((jsonString) => Note.fromJson(json.decode(jsonString)))
+        .toList();
     notifyListeners();
   }
 
   Future<void> _saveNotes() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_notesKey, _notes);
+    final notesJson = _notes.map((note) => json.encode(note.toJson())).toList();
+    await prefs.setStringList(_notesKey, notesJson);
   }
 
   void addNote(String note) {
-    _notes.add(note);
+    final newNote = Note(text: note, colorHex: noteColorPalette.first);
+    _notes.add(newNote);
     _saveNotes();
     notifyListeners();
-    NotificationService().showNotification('Nota Guardada', 'Tu nota ha sido añadida correctamente.');
+    if (kIsWeb) {
+      MessengerService().showSnackbar('Nota guardada');
+    } else {
+      NotificationService().showNotification('Nota Guardada', 'Tu nota ha sido añadida correctamente.');
+    }
   }
 
   void deleteNote(int index) {
-    _notes.removeAt(index);
-    _saveNotes();
-    notifyListeners();
-    NotificationService().showNotification('Nota Eliminada', 'La nota ha sido borrada.');
+    if (index >= 0 && index < _notes.length) {
+      final deletedNoteText = _notes[index].text;
+      _notes.removeAt(index);
+      _saveNotes();
+      notifyListeners();
+      if (kIsWeb) {
+        MessengerService().showSnackbar('Nota eliminada: "${deletedNoteText.substring(0, (deletedNoteText.length > 15) ? 15 : deletedNoteText.length)}..."');
+      } else {
+        NotificationService().showNotification('Nota Eliminada', 'La nota ha sido borrada.');
+      }
+    }
+  }
+
+  void updateNoteColor(int index, String newColorHex) {
+    if (index >= 0 && index < _notes.length) {
+      _notes[index].colorHex = newColorHex;
+      _saveNotes();
+      notifyListeners();
+    }
   }
 }
 
@@ -161,6 +222,7 @@ class MyApp extends StatelessWidget {
         theme: _buildAppTheme(),
         home: const WatchScreen(),
         debugShowCheckedModeBanner: false,
+        scaffoldMessengerKey: scaffoldMessengerKey, // Asignamos la clave global
       ),
     );
   }
@@ -185,6 +247,7 @@ class MyApp extends StatelessWidget {
         primaryContainer: Color(0xFF3A5A40), // Encabezados o iconos
         surfaceVariant: Color(0xFF344E41), // AppBar, fondo oscuro
       ),
+      fontFamily: 'Poppins',
       textTheme: const TextTheme(
         headlineSmall: TextStyle(color: Color(0xFF3A5A40), fontWeight: FontWeight.bold, fontSize: 18),
         bodyMedium: TextStyle(color: Color(0xFF344E41)),
@@ -246,11 +309,6 @@ class _HomeScreenState extends State<HomeScreen> {
         _now = DateTime.now();
       });
     });
-    _initSpeech();
-  }
-  
-  void _initSpeech() async {
-    await _speech.initialize();
   }
 
   @override
@@ -261,88 +319,59 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _startListening(BuildContext context) async {
     // 1. Solicitar permiso de micrófono
-    var status = await Permission.microphone.request();
+    PermissionStatus status = await Permission.microphone.request();
 
     // 2. Comprobar el estado del permiso
-    if (status != PermissionStatus.granted) {
-      NotificationService().showNotification(
-          "Permiso denegado", "Se necesita acceso al micrófono para dictar notas.");
-      return;
+    if (!status.isGranted) {
+      // Si el permiso fue denegado permanentemente, guiar al usuario a los ajustes.
+      if (status.isPermanentlyDenied) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Permiso Necesario'),
+            content: const Text(
+                'Para usar el dictado por voz, habilita el permiso de micrófono en los ajustes de la aplicación.'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Cancelar'),
+              ),
+              TextButton(
+                onPressed: () {
+                  openAppSettings(); // Abre los ajustes de la app
+                  Navigator.of(context).pop();
+                },
+                child: const Text('Abrir Ajustes'),
+              ),
+            ],
+          ),
+        );
+      } else {
+        // Si solo fue denegado esta vez, mostrar una notificación.
+        NotificationService().showNotification(
+            "Permiso denegado", "Se necesita acceso al micrófono para dictar notas.");
+      }
+      return; // Detener la ejecución si no hay permiso
     }
 
-    // 3. Verificar si el servicio está disponible después de conceder el permiso
-    bool available = await _speech.initialize();
+    // 3. Si el permiso está concedido, verificar si el servicio está disponible
+    bool available = false;
+    try {
+      available = await _speech.initialize();
+    } catch (e) {
+      // La excepción PlatformException será capturada aquí.
+      // 'available' permanecerá como 'false'.
+    }
     if (!available) {
       NotificationService().showNotification("Error", "Reconocimiento de voz no disponible.");
       return;
     }
-    
-    showDialog(
+    // Comprueba si el widget sigue montado después de la operación asíncrona.
+    if (!mounted) return;
+
+    showDialog<void>(
       context: context,
-      builder: (BuildContext dialogContext) {
-        String recognizedWords = "";
-        bool isListening = false;
-        
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            if (!isListening) {
-  isListening = true;
-
-  // Set status listener
-  _speech.statusListener = (status) {
-    if (status == 'notListening') {
-      setDialogState(() {
-        isListening = false;
-      });
-    }
-  };
-
-  _speech.listen(
-    onResult: (result) {
-      setDialogState(() {
-        recognizedWords = result.recognizedWords;
-      });
-    },
-  );
-}
-
-            return AlertDialog(
-              backgroundColor: const Color(0xFFDAD7CD),
-              title: Text('Dictando nota...', style: Theme.of(context).textTheme.headlineSmall),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    isListening ? Icons.mic : Icons.mic_off,
-                    color: Theme.of(context).colorScheme.primary, 
-                    size: 40),
-                  const SizedBox(height: 16),
-                  Text(recognizedWords.isEmpty ? 'Escuchando...' : recognizedWords, textAlign: TextAlign.center),
-                ],
-              ),
-              actions: <Widget>[
-                TextButton(
-                  child: const Text('Cancelar', style: TextStyle(color: Colors.red)),
-                  onPressed: () {
-                    _speech.stop();
-                    Navigator.of(dialogContext).pop();
-                  },
-                ),
-                TextButton(
-                  child: Text('Guardar', style: TextStyle(color: Theme.of(context).colorScheme.primary)),
-                  onPressed: () {
-                    if (recognizedWords.isNotEmpty) {
-                      Provider.of<NoteProvider>(context, listen: false).addNote(recognizedWords);
-                    }
-                    _speech.stop();
-                    Navigator.of(dialogContext).pop();
-                  },
-                ),
-              ],
-            );
-          },
-        );
-      },
+      builder: (BuildContext dialogContext) => _DictationDialog(speech: _speech),
     );
   }
 
@@ -413,6 +442,87 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
+// -----------------------------------------------------------------------------
+// WIDGET DE DIÁLOGO PARA DICTADO
+// -----------------------------------------------------------------------------
+class _DictationDialog extends StatefulWidget {
+  final SpeechToText speech;
+  const _DictationDialog({required this.speech});
+
+  @override
+  State<_DictationDialog> createState() => _DictationDialogState();
+}
+
+class _DictationDialogState extends State<_DictationDialog> {
+  String _recognizedWords = "";
+  bool _isListening = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _startListening();
+  }
+
+  void _startListening() {
+    setState(() => _isListening = true);
+
+    widget.speech.statusListener = (status) {
+      if (status == 'notListening' || status == 'done') {
+        if (mounted) {
+          setState(() => _isListening = false);
+        }
+      }
+    };
+
+    widget.speech.listen(
+      onResult: (result) {
+        if (mounted) {
+          setState(() => _recognizedWords = result.recognizedWords);
+        }
+      },
+    );
+  }
+
+  void _stopListening() {
+    widget.speech.stop();
+    if (mounted) {
+      setState(() => _isListening = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: const Color(0xFFDAD7CD),
+      title: Text('Dictando nota...', style: Theme.of(context).textTheme.headlineSmall),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            _isListening ? Icons.mic : Icons.mic_off,
+            color: Theme.of(context).colorScheme.primary,
+            size: 40,
+          ),
+          const SizedBox(height: 16),
+          Text(_recognizedWords.isEmpty ? 'Escuchando...' : _recognizedWords, textAlign: TextAlign.center),
+        ],
+      ),
+      actions: <Widget>[
+        TextButton(child: const Text('Cancelar', style: TextStyle(color: Colors.red)), onPressed: () {
+          _stopListening();
+          Navigator.of(context).pop();
+        }),
+        TextButton(child: Text('Guardar', style: TextStyle(color: Theme.of(context).colorScheme.primary)), onPressed: () {
+          if (_recognizedWords.isNotEmpty) {
+            Provider.of<NoteProvider>(context, listen: false).addNote(_recognizedWords);
+          }
+          _stopListening();
+          Navigator.of(context).pop();
+        }),
+      ],
+    );
+  }
+}
 
 // -----------------------------------------------------------------------------
 // PANTALLA DE LISTA DE NOTAS (CON SWIPE-TO-DISMISS AUTOMÁTICO)
@@ -428,46 +538,169 @@ class NotesScreen extends StatelessWidget {
     // El gesto de deslizar para descartar es manejado automáticamente por `wear_plus`.
     //
     return Scaffold(
+      appBar: AppBar(
+        title: Text('Mis notas', style: theme.textTheme.headlineSmall),
+        centerTitle: true,
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+      ),
       backgroundColor: theme.scaffoldBackgroundColor,
       body: Center(
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(top: 25.0, bottom: 10.0),
-              child: Text('Notas', style: theme.textTheme.headlineSmall),
-            ),
-            Expanded(
-              child: Consumer<NoteProvider>(
-                builder: (context, noteProvider, child) {
-                  if (noteProvider.notes.isEmpty) {
-                    return const Center(child: Text('No hay notas guardadas.'));
-                  }
-                  return ListView.builder(
-                    itemCount: noteProvider.notes.length,
-                    itemBuilder: (context, index) {
-                      return Card(
-                        color: theme.colorScheme.secondary.withOpacity(0.5),
-                        margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        child: ListTile(
-                          title: Text(
-                            noteProvider.notes[index],
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.delete, color: Colors.redAccent),
-                            onPressed: () => noteProvider.deleteNote(index),
+        child: Consumer<NoteProvider>(
+          builder: (context, noteProvider, child) {
+            if (noteProvider.notes.isEmpty) {
+              return const Center(child: Text('No hay notas guardadas.'));
+            }
+            return ListView.builder( // CAMBIO: Usar ListView.builder para eficiencia
+              itemCount: noteProvider.notes.length,
+              itemBuilder: (context, index) {
+                final note = noteProvider.notes[index];
+                return Card(
+                  color: note.color.withOpacity(0.8),
+                  margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  child: InkWell(
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => NoteDetailScreen(
+                            noteIndex: index,
                           ),
                         ),
                       );
                     },
-                  );
-                },
-              ),
-            ),
-          ],
+                    child: ListTile(
+                      title: Text(
+                        note.text,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.redAccent),
+                        onPressed: () => noteProvider.deleteNote(index),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            );
+          },
         ),
       ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// PANTALLA DE DETALLE DE NOTA
+// -----------------------------------------------------------------------------
+class NoteDetailScreen extends StatelessWidget {
+  final int noteIndex;
+
+  const NoteDetailScreen({
+    super.key,
+    required this.noteIndex,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    // Usamos un Consumer para que la pantalla se reconstruya si cambia el color de la nota
+    return Consumer<NoteProvider>(
+      builder: (context, noteProvider, child) {
+        // Asegurarse de que el índice es válido
+        if (noteIndex >= noteProvider.notes.length) {
+          // Si la nota fue eliminada mientras esta pantalla estaba abierta, la cerramos.
+          // Usamos un post-frame callback para evitar errores de build.
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (Navigator.canPop(context)) {
+              Navigator.pop(context);
+            }
+          });
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        }
+
+        final note = noteProvider.notes[noteIndex];
+
+        return Scaffold(
+          appBar: AppBar(
+            title: Text('Detalle', style: theme.textTheme.headlineSmall),
+            centerTitle: true,
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+          ),
+          backgroundColor: theme.scaffoldBackgroundColor,
+          body: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Text(
+                      note.text,
+                      style: theme.textTheme.bodyLarge,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                // Paleta de colores
+                _buildColorPalette(context),
+                const SizedBox(height: 10),
+                TextButton.icon(
+                  onPressed: () {
+                    // Usar Provider para borrar la nota y luego cerrar la pantalla
+                    Provider.of<NoteProvider>(context, listen: false).deleteNote(noteIndex);
+                    Navigator.pop(context);
+                  },
+                  icon: Icon(Icons.delete, color: theme.colorScheme.error),
+                  label: Text(
+                    'Eliminar Nota',
+                    style: TextStyle(color: theme.colorScheme.error),
+                  ),
+                  style: TextButton.styleFrom(
+                    backgroundColor: theme.colorScheme.error.withOpacity(0.1),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildColorPalette(BuildContext context) {
+    final noteProvider = Provider.of<NoteProvider>(context, listen: false);
+    final currentNoteColor = noteProvider.notes[noteIndex].colorHex;
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: noteColorPalette.map((colorHex) {
+        final color = _colorFromHex(colorHex);
+        final isSelected = colorHex == currentNoteColor;
+
+        return GestureDetector(
+          onTap: () {
+            noteProvider.updateNoteColor(noteIndex, colorHex);
+          },
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 8.0),
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+              border: isSelected
+                  ? Border.all(color: Theme.of(context).colorScheme.onSurface, width: 3)
+                  : Border.all(color: Colors.grey.withOpacity(0.5), width: 1),
+            ),
+          ),
+        );
+      }).toList(),
     );
   }
 }
@@ -506,22 +739,38 @@ class _TextNoteScreenState extends State<TextNoteScreen> {
                 ),
               ),
               const SizedBox(height: 10),
-              ElevatedButton(
-                onPressed: () {
-                  if (_controller.text.isNotEmpty) {
-                    Provider.of<NoteProvider>(context, listen: false)
-                        .addNote(_controller.text);
-                    Navigator.pop(context);
-                  } else {
-                    NotificationService().showNotification(
-                        'Error', 'La nota no puede estar vacía.');
-                  }
-                },
-                style: ElevatedButton.styleFrom(
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-                child: const Text('Guardar'),
-              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  OutlinedButton(
+                    onPressed: () {
+                      Navigator.pop(context);
+                    },
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: theme.colorScheme.error,
+                      side: BorderSide(color: theme.colorScheme.error),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: const Text('Cancelar'),
+                  ),
+                  ElevatedButton(
+                    onPressed: () {
+                      if (_controller.text.isNotEmpty) {
+                        Provider.of<NoteProvider>(context, listen: false)
+                            .addNote(_controller.text);
+                        Navigator.pop(context);
+                      } else {
+                        NotificationService().showNotification(
+                            'Error', 'La nota no puede estar vacía.');
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: const Text('Guardar'),
+                  ),
+                ],
+              )
             ],
           ),
         ),
@@ -544,23 +793,21 @@ class SettingsScreen extends StatelessWidget {
     // El gesto de deslizar para descartar es manejado automáticamente por `wear_plus`.
     //
     return Scaffold(
+      appBar: AppBar(
+        title: Text('Configuración', style: theme.textTheme.headlineSmall),
+        centerTitle: true,
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+      ),
       backgroundColor: theme.scaffoldBackgroundColor,
       body: Consumer<SettingsProvider>(
         builder: (context, settings, child) {
           return Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16.0),
             child: Column(
-              mainAxisAlignment: MainAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Padding(
-                  padding: const EdgeInsets.only(top: 25.0, bottom: 20.0),
-                  child: Text(
-                    'Configuración',
-                    style: theme.textTheme.headlineSmall,
-                    textAlign: TextAlign.center,
-                  ),
-                ),
                 _buildSettingItem(
                   context: context,
                   icon: Icons.wifi,
@@ -568,7 +815,7 @@ class SettingsScreen extends StatelessWidget {
                   isActive: settings.isWifiEnabled,
                   onTap: () => settings.toggleWifi(),
                 ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 10),
                 _buildSettingItem(
                   context: context,
                   icon: Icons.bluetooth,
